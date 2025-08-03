@@ -1,0 +1,7 @@
+.env
+dataset/
+extracted_data/
+final/
+.venv/
+
+blueprints\__pycache__/
