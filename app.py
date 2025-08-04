@@ -5,6 +5,7 @@ from extensions import init_supabase, init_pinecone, init_anthropic, init_openai
 from blueprints.auth import auth_bp
 from blueprints.chat import chat_bp 
 from flask_cors import CORS
+from blueprints.sys_prompt import sys_prompt_bp
 
 def create_app():
     load_dotenv()
@@ -22,5 +23,6 @@ def create_app():
     # Register blueprints
     app.register_blueprint(auth_bp, url_prefix="/auth")
     app.register_blueprint(chat_bp, url_prefix="/chat")
+    app.register_blueprint(sys_prompt_bp, url_prefix="/prompt")
 
     return app

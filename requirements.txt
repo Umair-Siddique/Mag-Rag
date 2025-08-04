@@ -21,3 +21,4 @@ langchain-community
 langchain-tavily
 faiss-cpu
 groq
+lark

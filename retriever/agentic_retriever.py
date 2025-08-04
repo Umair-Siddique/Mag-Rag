@@ -221,7 +221,7 @@ def retrieve_from_pinecone(state: GraphState) -> dict:
 
     results = index.query(
         vector=query_embedding,
-        top_k=5,
+        top_k=10,
         include_metadata=True,
         namespace=namespace
     )
