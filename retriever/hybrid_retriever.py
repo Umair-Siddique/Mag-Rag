@@ -26,8 +26,7 @@ index_name = "career-counseling-documents"
 vectorstore = PineconeVectorStore.from_existing_index(
     index_name=index_name,
     embedding=embeddings_model,
-    text_key="content"  # Specify the correct metadata key here
-)
+    text_key="content"  )
 
 
 # Dense vector retrieval
@@ -80,7 +79,7 @@ def decide_namespace(query: str):
 
     User query: "{query}"
 
-    Respond with ONLY one word: "insights" or "insights".
+    Respond with ONLY one word: "brand-positioning" or "brand-positioning".
     """
 
     completion = client.chat.completions.create(
