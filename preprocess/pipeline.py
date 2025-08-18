@@ -7,8 +7,8 @@ import docx2txt
 import re
 
 # --- Configuration for Windows ---
-files_folder_path = "dataset\dataset_insights"
-output_folder_path = "extracted_data\extracted_text_insights"
+files_folder_path = "dataset\dataset_go_to_market"
+output_folder_path = "extracted_data\extracted_text_go_to_market"
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # --- Setup ---

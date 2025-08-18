@@ -10,3 +10,4 @@ class Config:
     OPEN_AI_KEY=os.getenv("OPENAI_API_KEY")
     CLAUDE_API_KEY=os.getenv("CLAUDE_API_KEY")
     EMBEDDING_MODEL=os.getenv("EMBEDDING_MODEL")
+    MISTRAL_API_KEY=os.getenv('MISTRAL_API_KEY')
