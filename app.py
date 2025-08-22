@@ -31,3 +31,9 @@ def create_app():
     app.register_blueprint(retriever_bp,url_prefix="/retriever")
 
     return app
+
+# Create the app instance for gunicorn
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=5001, debug=True)
