@@ -173,12 +173,19 @@ def decide_method(state: GraphState) -> GraphState:
 def decide_namespace(state: GraphState) -> GraphState:
     query = state["query"]
     prompt = """
-    Choose namespace:
-    - brand-positioning for queries about branding, metaphors, archetypes.
-    - insights for consumer behavior, trends, or cultural insights.
+    Based on the query, choose the most appropriate namespace from these 4 options:
+
+    1. brand-positioning: For queries about branding, brand strategy, positioning, metaphors, archetypes, semiotics, brand foundations, brand briefs, memory structures, cultural positioning, brand narratives, manifestos, values, and brand voice.
+
+    2. insights: For queries about consumer behavior, market trends, cultural insights, tensions, consumer research, market analysis, behavioral patterns, cultural shifts, and trend analysis.
+
+    3. events: For queries about events, activations, launch events, community building, cultural programs, IRL experiences, event design, and experiential marketing.
+
+    4. common: For queries about operations, go-to-market strategies, business models, scaling, investment pitches, launch campaigns, DTC strategies, influencer marketing, and general business operations.
 
     Query: {query}
-    Respond ONLY with brand-positioning or insights (no quotes, no punctuation, no extra words).
+    
+    Respond ONLY with one of these exact namespaces: brand-positioning, insights, events, or common (no quotes, no punctuation, no extra words).
     """.format(query=query)
 
     completion = client.chat.completions.create(
@@ -189,8 +196,9 @@ def decide_namespace(state: GraphState) -> GraphState:
     namespace = completion.choices[0].message.content.strip().lower()
     namespace = namespace.strip('"').strip("'")
 
-    if namespace not in ("brand-positioning", "insights"):
-        namespace = "insights"
+    # Update validation to include all 4 namespaces
+    if namespace not in ("brand-positioning", "insights", "events", "common"):
+        namespace = "common"  # Default fallback
 
     return {**state, "namespace": namespace}
 
