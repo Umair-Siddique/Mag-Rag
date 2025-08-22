@@ -15,8 +15,8 @@ class Config:
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
-    JSON_FOLDER = "./final_insights"  # Folder containing your JSON files
-    NAMESPACE = "insights"
+    JSON_FOLDER = "./final_operations"  # Folder containing your JSON files
+    NAMESPACE = "common"
     INDEX_NAME = "career-counseling-documents"
 
 def remove_markdown(text):

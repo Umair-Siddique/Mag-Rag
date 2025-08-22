@@ -17,8 +17,8 @@ TOKENS_PER_CHUNK = 2500
 TOKENS_OVERLAP   = 250  # small overlap to avoid boundary loss
 MODEL_NAME       = "meta-llama/llama-4-scout-17b-16e-instruct"
 
-INPUT_FOLDER  = r"extracted_data\extracted_text_trends"
-OUTPUT_FOLDER = "final_trends"
+INPUT_FOLDER  = r"extracted_data\extracted_text_operations"
+OUTPUT_FOLDER = "final_operations"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 GROQ_API_KEY=os.getenv('GROQ_API_KEY')
@@ -193,8 +193,8 @@ for filename in os.listdir(INPUT_FOLDER):
         out.write(full_summary)
 
     # --- NEW: Semantic chunking for the FINAL SUMMARY (store these in JSON) ---
-    summary_splitter = make_recursive_splitter(TOKENS_PER_CHUNK, TOKENS_OVERLAP)
-    semantic_summary_chunks = summary_splitter.split_text(full_summary)
+    sem_splitter = make_semantic_splitter()
+    semantic_summary_chunks = sem_splitter.split_text(full_summary)
 
     # Also store a human-readable chunk list (optional, unchanged behavior)
     chunk_list_path = os.path.join(OUTPUT_FOLDER, f"{base}__summary_chunklist.txt")
@@ -227,63 +227,3 @@ for filename in os.listdir(INPUT_FOLDER):
     print(f"✅ Summarized & cleaned: '{filename}' → {final_txt_path}")
     print(f"🧠 Semantic chunk list saved: '{filename}' → {chunk_list_path}")
     print(f"🗂️ JSON saved: '{filename}' → {unified_path}")
-
-
-
-# file_counter = 0
-
-# for filename in os.listdir(INPUT_FOLDER):
-#     if not filename.lower().endswith(".txt"):
-#         continue
-
-#     file_counter += 1
-#     if file_counter <= 78:
-#         print(f"⏭️ Skipping file {file_counter}: {filename}")
-#         continue
-
-#     input_path = os.path.join(INPUT_FOLDER, filename)
-#     with open(input_path, "r", encoding="utf-8") as f:
-#         original_text = f.read()
-
-#     per_chunk_summaries, full_summary = summarize_document(original_text)
-
-#     # Save ONE final file with the concatenated summary
-#     base = os.path.splitext(filename)[0]
-#     final_txt_path = os.path.join(OUTPUT_FOLDER, f"{base}__summary.txt")
-#     with open(final_txt_path, "w", encoding="utf-8") as out:
-#         out.write(full_summary)
-
-#     # --- NEW: Semantic chunking for the FINAL SUMMARY (store these in JSON) ---
-#     sem_splitter = make_semantic_splitter()
-#     semantic_summary_chunks = sem_splitter.split_text(full_summary)
-
-#     # Store a human-readable chunk list
-#     chunk_list_path = os.path.join(OUTPUT_FOLDER, f"{base}__summary_chunklist.txt")
-#     with open(chunk_list_path, "w", encoding="utf-8") as cf:
-#         total = len(semantic_summary_chunks)
-#         for i, ch in enumerate(semantic_summary_chunks, start=1):
-#             cf.write(f"=== SEMANTIC SUMMARY CHUNK {i}/{total} ===\n{ch}\n\n")
-
-#     # --- Single JSON output ---
-#     meta = generate_metadata_rag(
-#         original_text,
-#         None,
-#         None,
-#         groq_client,
-#         per_chunk_summaries
-#     )
-
-#     unified_json = {
-#         "filename": filename,
-#         "keywords": meta.get("keywords", []),
-#         "topics": meta.get("topics", []),
-#         "summarized_chunks": semantic_summary_chunks
-#     }
-
-#     unified_path = os.path.join(OUTPUT_FOLDER, f"{base}__meta.json")
-#     with open(unified_path, "w", encoding="utf-8") as jf:
-#         json.dump(unified_json, jf, ensure_ascii=False, indent=2)
-
-#     print(f"✅ Summarized & cleaned: '{filename}' → {final_txt_path}")
-#     print(f"🧠 Semantic chunk list saved: '{filename}' → {chunk_list_path}")
-#     print(f"🗂️ JSON saved: '{filename}' → {unified_path}")
