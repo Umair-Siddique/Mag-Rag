@@ -6,12 +6,15 @@ from openai import OpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, END
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage
+from langchain.chains import ConversationChain
+from langchain_openai import ChatOpenAI
 from uuid import uuid4
 from datetime import datetime, timezone
 from postgrest.exceptions import APIError
 import json
 from flask import Response, stream_with_context
-
 
 # Initialize blueprint
 retriever_bp = Blueprint('retriever', __name__)
@@ -19,9 +22,21 @@ retriever_bp = Blueprint('retriever', __name__)
 # Initialize clients
 load_dotenv()
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-
 embeddings_model = OpenAIEmbeddings(api_key=os.getenv('OPENAI_API_KEY'), model='text-embedding-3-large')
 
+# Initialize LangChain components
+llm = ChatOpenAI(
+    temperature=0.7,
+    openai_api_key=os.getenv('OPENAI_API_KEY'),
+    model_name="gpt-4"
+)
+
+# Initialize conversation memory
+memory = ConversationBufferMemory(
+    memory_key="chat_history",
+    return_messages=True,
+    max_token_limit=2000
+)
 
 class GraphState(TypedDict):
     query: str
@@ -31,14 +46,12 @@ class GraphState(TypedDict):
     web_search_results: str
     final_answer: str
     conversation_id: str
-    user_id: str  # Add user_id to the state
+    user_id: str
+    chat_history: List[str]
 
-# --- Add this tiny helper somewhere near the top ---
+# Helper function for Server-Sent Events
 def sse(event: str, data) -> str:
-    # Formats a Server-Sent Event: event: <type>\n data: <json>\n\n
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
 
 def get_user_system_prompt(user_id: str) -> str:
     """
@@ -104,29 +117,70 @@ Avoid copying documents verbatim. Instead, synthesize and remix previous brand w
 
     except Exception as e:
         current_app.logger.error(f"Error fetching system prompt for user {user_id}: {e}")
-        # Return fallback prompt on error
         return """
 You are a strategic brand assistant. Please provide helpful, insightful responses based on the available context and user queries.
         """
 
+def get_chat_history_context(conversation_id: str, user_id: str) -> List[str]:
+    """
+    Use LangChain's memory management to retrieve and format chat history
+    """
+    if not conversation_id:
+        return []
+    
+    try:
+        supabase = current_app.supabase
+        
+        # Get the last 10 messages from Supabase
+        res = (
+            supabase
+            .table('messages')
+            .select('content, sender, created_at')
+            .eq('conversation_id', conversation_id)
+            .order('created_at', desc=False)
+            .limit(10)
+            .execute()
+        )
+
+        rows = res.data or []
+        
+        # Convert to LangChain message format
+        messages = []
+        for row in rows:
+            if row['sender'] == 'user':
+                messages.append(HumanMessage(content=row['content']))
+            elif row['sender'] == 'assistant':
+                messages.append(AIMessage(content=row['content']))
+        
+        # Update memory with conversation history
+        memory.chat_memory.messages = messages
+        
+        # Get formatted history from LangChain memory
+        history = memory.load_memory_variables({})
+        chat_history = history.get('chat_history', [])
+        
+        # Format for display
+        formatted_history = []
+        for msg in chat_history:
+            if isinstance(msg, HumanMessage):
+                formatted_history.append(f"User: {msg.content}")
+            elif isinstance(msg, AIMessage):
+                formatted_history.append(f"Assistant: {msg.content}")
+        
+        return formatted_history[-10:]  # Return last 10 messages
+        
+    except Exception as e:
+        current_app.logger.error(f"Error fetching chat history context: {e}")
+        return []
 
 # Authentication helper functions
 def _extract_access_token() -> str | None:
-    """
-    Pull the JWT from the Authorization header:
-        Authorization: Bearer <token>
-    Return None if the header is missing or malformed.
-    """
     auth_header = request.headers.get('Authorization', '')
     if auth_header.startswith('Bearer '):
         return auth_header.split(' ', 1)[1].strip() or None
     return None
 
 def authenticate_user() -> object | None:
-    """
-    Authenticate the incoming request by validating the JWT against Supabase.
-    Returns the Supabase user object on success, otherwise None.
-    """
     access_token = _extract_access_token()
     if not access_token:
         return None
@@ -138,9 +192,6 @@ def authenticate_user() -> object | None:
         return None
 
 def verify_conversation_ownership(conversation_id: str, user_id: str) -> bool:
-    """
-    Verify that the conversation belongs to the authenticated user.
-    """
     try:
         supabase = current_app.supabase
         res = (
@@ -159,9 +210,9 @@ def decide_method(state: GraphState) -> GraphState:
     query = state["query"]
     prompt = f"""
     Decide retrieval method based on query:
-    - Use "web" for recent external trends or events.
-    - Use "pinecone" for brand or consumer insights.
-    - Use "chat_history" for conversational or follow-up queries.
+    - Use "web" Only when user specifically mentioned to retrieve from web.
+    - Use "pinecone" for brand or consumer insights, events, operations and all the general queries asked by user.
+    - Use "chat_history" when user mention to refer from previous chat.
 
     Query: {query}
     Respond ONLY with "web", "pinecone", or "chat_history".
@@ -177,7 +228,7 @@ def decide_namespace(state: GraphState) -> GraphState:
 
     1. brand-positioning: For queries about branding, brand strategy, positioning, metaphors, archetypes, semiotics, brand foundations, brand briefs, memory structures, cultural positioning, brand narratives, manifestos, values, and brand voice.
 
-    2. insights: For queries about consumer behavior, market trends, cultural insights, tensions, consumer research, market analysis, behavioral patterns, cultural shifts, and trend analysis.
+    2. insights: For queries about consumer behavior, market trends, seven centers, cultural insights, tensions, consumer research, market analysis, behavioral patterns, cultural shifts, and trend analysis.
 
     3. events: For queries about events, activations, launch events, community building, cultural programs, IRL experiences, event design, and experiential marketing.
 
@@ -196,19 +247,58 @@ def decide_namespace(state: GraphState) -> GraphState:
     namespace = completion.choices[0].message.content.strip().lower()
     namespace = namespace.strip('"').strip("'")
 
-    # Update validation to include all 4 namespaces
     if namespace not in ("brand-positioning", "insights", "events", "common"):
-        namespace = "common"  # Default fallback
+        namespace = "common"
 
     return {**state, "namespace": namespace}
 
 def retrieve_pinecone(state: GraphState) -> GraphState:
     print(f"Retrieving from Pinecone namespace: {state['namespace']}")
     query_embedding = embeddings_model.embed_query(state["query"])
+    
     # Use the Pinecone instance from extensions.py
     index = current_app.pinecone.Index("career-counseling-documents")
-    results = index.query(vector=query_embedding, top_k=5, include_metadata=True, namespace=state["namespace"])
-    docs = [match['metadata'].get('text', '') for match in results.get('matches', [])]
+    
+    # Get all available namespaces
+    all_namespaces = ["brand-positioning", "insights", "events", "common"]
+    other_namespaces = [ns for ns in all_namespaces if ns != state["namespace"]]
+    
+    # Search from specific namespace
+    specific_results = index.query(
+        vector=query_embedding, 
+        top_k=5, 
+        include_metadata=True, 
+        namespace=state["namespace"]
+    )
+    
+    # Search from all other namespaces combined
+    other_results = index.query(
+        vector=query_embedding, 
+        top_k=5, 
+        include_metadata=True, 
+        namespace=",".join(other_namespaces)
+    )
+    
+    # Combine and deduplicate results
+    all_matches = []
+    
+    if specific_results.get('matches'):
+        all_matches.extend(specific_results['matches'])
+    
+    if other_results.get('matches'):
+        all_matches.extend(other_results['matches'])
+    
+    # Remove duplicates based on metadata text
+    seen_texts = set()
+    unique_matches = []
+    for match in all_matches:
+        text = match['metadata'].get('text', '')
+        if text and text not in seen_texts:
+            seen_texts.add(text)
+            unique_matches.append(match)
+    
+    docs = [match['metadata'].get('text', '') for match in unique_matches[:5]]
+    
     return {**state, "retrieved_documents": docs, "web_search_results": ""}
 
 def retrieve_web(state: GraphState) -> GraphState:
@@ -226,7 +316,6 @@ def retrieve_web(state: GraphState) -> GraphState:
 
 def retrieve_chat_history(state: GraphState) -> GraphState:
     print("Retrieving from Chat History")
-    supabase = current_app.supabase
     conv_id = state.get("conversation_id")
 
     if not conv_id:
@@ -237,45 +326,19 @@ def retrieve_chat_history(state: GraphState) -> GraphState:
         }
 
     try:
-        # Get the last 10 messages (5 user-assistant pairs) in chronological order
-        res = (
-            supabase
-            .table('messages')
-            .select('content, sender, created_at')
-            .eq('conversation_id', conv_id)
-            .order('created_at', desc=False)  # Chronological order (oldest first)
-            .limit(10)  # Get 10 messages to ensure we have 5 complete conversations
-            .execute()
-        )
-
-        rows = res.data or []
+        # Use LangChain memory to get chat history
+        chat_history = get_chat_history_context(conv_id, state.get("user_id"))
         
-        # Group messages into conversations (user + assistant pairs)
-        conversations = []
-        i = 0
-        while i < len(rows) - 1:  # Need at least 2 messages for a conversation
-            if rows[i]['sender'] == 'user' and rows[i + 1]['sender'] == 'assistant':
-                # Found a complete conversation pair
-                conversation = f"User: {rows[i]['content']}\nAssistant: {rows[i + 1]['content']}"
-                conversations.append(conversation)
-                i += 2  # Skip both messages
-            else:
-                i += 1  # Skip incomplete conversation
-        
-        # Take only the last 5 conversations and reverse order (most recent first)
-        last_5_conversations = conversations[-5:] if len(conversations) > 5 else conversations
-        last_5_conversations.reverse()  # Most recent conversation on top
-        
-        # If no complete conversations found, return individual messages
-        if not last_5_conversations:
-            formatted = [f"{row['sender'].title()}: {row['content']}" for row in rows[-5:]]
-            formatted.reverse()  # Most recent on top
-        else:
-            formatted = last_5_conversations
+        if not chat_history:
+            return {
+                **state,
+                "retrieved_documents": ["No chat history found."],
+                "web_search_results": ""
+            }
 
         return {
             **state,
-            "retrieved_documents": formatted,
+            "retrieved_documents": chat_history,
             "web_search_results": ""
         }
 
@@ -294,19 +357,34 @@ def route_method(state: GraphState):
     return "chat_history_retrieve"
 
 def generate_answer(state: GraphState) -> GraphState:
-    history_docs = state["retrieved_documents"]
-    docs_blob = f"User (current query): {state['query']}\n\n---\n\n" + "\n\n---\n\n".join(history_docs)
+    # Always get chat history context first using LangChain memory
+    chat_history_context = get_chat_history_context(state.get("conversation_id"), state.get("user_id"))
+    
+    # Combine chat history with retrieved documents
+    all_context = []
+    
+    # Add chat history context first (most recent conversations)
+    if chat_history_context:
+        all_context.extend(chat_history_context)
+    
+    # Add retrieved documents from the main method
+    if state.get("retrieved_documents"):
+        all_context.extend(state["retrieved_documents"])
+    
+    # If no main documents retrieved, still use chat history
+    if not all_context:
+        all_context = chat_history_context
+    
+    docs_blob = f"User (current query): {state['query']}\n\n---\n\n" + "\n\n---\n\n".join(all_context[:8])
 
     # Get the user ID from the conversation to fetch their system prompt
     user_id = None
     if state.get("conversation_id"):
         user_id = get_conversation_user_id(state["conversation_id"])
     
-    # If we can't get user_id from conversation, we'll use a default prompt
     if user_id:
         system_prompt = get_user_system_prompt(user_id)
     else:
-        # Fallback to default prompt if no user_id available
         system_prompt = """
 You are a strategic brand assistant built on a custom archive of brand strategy decks, insights, positioning briefs, go-to-market plans, trend reports, and event activations from a strategist with 15+ years of experience working across consumer culture, tech, and community-driven brands.
 
@@ -333,6 +411,7 @@ Always prioritize:
 
 Avoid copying documents verbatim. Instead, synthesize and remix previous brand work to generate fresh, original responses tailored to the users query.
         """
+    
     user_prompt = f"""
 A user asked:
 {state['query']}
@@ -413,9 +492,15 @@ def store_message(conversation_id, sender, content, user_id=None):
             'created_at': datetime.now(timezone.utc).isoformat()
         }
         supabase.table('messages').insert(payload).execute()
+        
+        # Update LangChain memory with new message
+        if sender == 'user':
+            memory.chat_memory.add_user_message(content)
+        elif sender == 'assistant':
+            memory.chat_memory.add_ai_message(content)
+            
     except APIError as e:
         current_app.logger.exception(f"Failed to store message: {e}")
-
 
 @retriever_bp.route('/query', methods=['POST'])
 def query_api():
@@ -451,22 +536,21 @@ def query_api():
                 "final_answer": "",
                 "conversation_id": conversation_id,
                 "user_id": user.id,
+                "chat_history": []
             }
-            method_state = decide_method(state)                         # uses OpenAI
+            method_state = decide_method(state)
             method = method_state["method"]
 
             namespace = None
             if method == "pinecone":
-                ns_state = decide_namespace(method_state)               # uses OpenAI
+                ns_state = decide_namespace(method_state)
                 namespace = ns_state["namespace"]
                 yield sse("status", f"Retrieving from Pinecone from {namespace}")
-                # 2) Retrieve from Pinecone
                 pine_state = retrieve_pinecone({**method_state, "namespace": namespace})
                 retrieved_docs = pine_state["retrieved_documents"]
                 web_results = ""
             elif method == "web":
                 yield sse("status", "Retrieving from web")
-                # 2) Retrieve from Web
                 web_state = retrieve_web(method_state)
                 retrieved_docs = web_state["retrieved_documents"]
                 web_results = web_state["web_search_results"]
@@ -476,7 +560,7 @@ def query_api():
                 retrieved_docs = hist_state["retrieved_documents"]
                 web_results = ""
 
-            # 3) Build prompts
+            # 3) Build prompts with LangChain memory context
             docs_blob = f"User (current query): {query}\n\n---\n\n" + "\n\n---\n\n".join(retrieved_docs[:8])
             system_prompt = get_user_system_prompt(user.id)
             user_prompt = f"A user asked:\n{query}\n\nHere are the most relevant messages or context:\n{docs_blob}"
@@ -492,7 +576,6 @@ def query_api():
                 model_id=model_id,
                 app=app
             ):
-                # token already formatted as `event: token`
                 full_answer_chunks.append(token["data"])
                 yield sse("token", token["data"])
 
@@ -507,20 +590,16 @@ def query_api():
                 "has_web_results": bool(web_results)
             })
 
-        # NOTE: Use SSE content type and no buffering
         headers = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no"  # for nginx, if applicable
+            "X-Accel-Buffering": "no"
         }
         return Response(stream_with_context(generate()), headers=headers)
 
     except Exception as e:
         current_app.logger.exception(f"Error in query processing: {str(e)}")
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
-
-
-
 
 def stream_llm_response_sse(prompt: str, system_prompt: str, model_id: str, app):
     """
@@ -558,22 +637,23 @@ def stream_llm_response_sse(prompt: str, system_prompt: str, model_id: str, app)
             current_app.logger.error(f"Mistral API error: {e}")
             yield {"event": "token", "data": f"\n[Provider error: {str(e)}]"}
 
-    elif model_id.startswith("gpt-"):
-        with client.chat.completions.stream(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=3500,
-            temperature=0.7,
-        ) as stream:
-            for event in stream:
-                try:
-                    delta = event.choices[0].delta.content
-                    if delta:
-                        yield {"event": "token", "data": delta}
-                except Exception:
-                    continue
+    elif model_id.startswith("gpt-4o"):
+        try:
+            response_stream = client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=3500,
+                temperature=0.7,
+                stream=True,
+            )
+            for chunk in response_stream:
+                if chunk.choices[0].delta.content is not None:
+                    yield {"event": "token", "data": chunk.choices[0].delta.content}
+        except Exception as e:
+            current_app.logger.error(f"OpenAI API error: {e}")
+            yield {"event": "token", "data": f"\n[Provider error: {str(e)}]"}
     else:
         raise ValueError(f"Unsupported model_id provided: {model_id}")
