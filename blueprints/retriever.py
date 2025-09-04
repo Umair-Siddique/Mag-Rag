@@ -211,11 +211,10 @@ def decide_method(state: GraphState) -> GraphState:
     prompt = f"""
     Decide retrieval method based on query:
     - Use "web" Only when user specifically mentioned to retrieve from web.
-    - Use "pinecone" for brand or consumer insights, events, operations and all the general queries asked by user.
-    - Use "chat_history" when user mention to refer from previous chat.
+    - Use "pinecone" for Every general query where User ask about some topic or a thing and It did not mentioned to search from web.
 
     Query: {query}
-    Respond ONLY with "web", "pinecone", or "chat_history".
+    Respond ONLY with "web" or "pinecone".
     """
     completion = client.chat.completions.create(model="gpt-4", messages=[{"role": "user", "content": prompt}])
     method = completion.choices[0].message.content.strip().lower()
@@ -223,20 +222,21 @@ def decide_method(state: GraphState) -> GraphState:
 
 def decide_namespace(state: GraphState) -> GraphState:
     query = state["query"]
+
     prompt = """
     Based on the query, choose the most appropriate namespace from these 4 options:
 
-    1. brand-positioning: For queries about branding, brand strategy, positioning, metaphors, archetypes, semiotics, brand foundations, brand briefs, memory structures, cultural positioning, brand narratives, manifestos, values, and brand voice.
+    1. Memory: For queries about memory structures, iconic elements, functional elements, emotional elements, brand architecture, branding, brand strategy, positioning, metaphors, archetypes, semiotics, brand foundations, brand briefs, cultural positioning, brand narratives, manifestos, values, and brand voice.
 
-    2. insights: For queries about consumer behavior, market trends, seven centers, cultural insights, tensions, consumer research, market analysis, behavioral patterns, cultural shifts, and trend analysis.
+    2. Tension: For queries about consumer behavior, market trends, empathic insights, seven centers, cultural insights, cultural strategy, cultural currency, tensions, consumer research, red door, market analysis, behavioral patterns, cultural shifts, and trend analysis, cultural trends.
 
-    3. events: For queries about events, activations, launch events, community building, cultural programs, IRL experiences, event design, and experiential marketing.
+    3. Movement: For queries about events, brand activations, launch events, community building, cultural programs, IRL experiences, event design, experiential marketing, go-to-market plans, content strategy, experience strategy, lifecycle marketing, campaigns, social media, influencers or brand ambassadors, communications plans, connections strategy, media planning, paid media, owned media, earned media.
 
-    4. common: For queries about operations, go-to-market strategies, business models, scaling, investment pitches, launch campaigns, DTC strategies, influencer marketing, and general business operations.
+    4. common: For queries about operations, team building, frameworks, templates, brand strategy, methodologies, workshops, general business operations.
 
     Query: {query}
-    
-    Respond ONLY with one of these exact namespaces: brand-positioning, insights, events, or common (no quotes, no punctuation, no extra words).
+
+    Respond ONLY with one of these exact namespaces: Memory, Tension, Movement, or common (no quotes, no punctuation, no extra words).
     """.format(query=query)
 
     completion = client.chat.completions.create(
@@ -244,13 +244,21 @@ def decide_namespace(state: GraphState) -> GraphState:
         messages=[{"role": "user", "content": prompt}]
     )
 
-    namespace = completion.choices[0].message.content.strip().lower()
-    namespace = namespace.strip('"').strip("'")
+    namespace = completion.choices[0].message.content.strip()
+    namespace = namespace.strip('"').strip("'").lower()
 
-    if namespace not in ("brand-positioning", "insights", "events", "common"):
-        namespace = "common"
+    # Map client-facing namespaces back to Pinecone ones
+    namespace_map = {
+        "memory": "brand-positioning",
+        "tension": "insights",
+        "movement": "events",
+        "common": "common"
+    }
+
+    namespace = namespace_map.get(namespace, "common")
 
     return {**state, "namespace": namespace}
+
 
 def retrieve_pinecone(state: GraphState) -> GraphState:
     print(f"Retrieving from Pinecone namespace: {state['namespace']}")
